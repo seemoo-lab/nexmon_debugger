@@ -76,11 +76,57 @@ unsigned char breakpoint_hit = 0;
  */
 unsigned char single_stepping = 0;
 
+/**
+ *  Breakpoint step counter, saves how many steps we performed after triggering the breakpoint
+ */
+
 unsigned int breakpoint_cnt0 = 0;
 unsigned int breakpoint_cnt1 = 0;
 unsigned int breakpoint_cnt2 = 0;
 unsigned int breakpoint_cnt3 = 0;
 
+/**
+ *  Saves one-hot encoded which watchpoint was hit
+ */
+unsigned char watchpoint_hit = 0;
+
+/**
+ *  Watchpoint hit counter, saves how often a watchpoint was hit
+ */
+unsigned char watchpoint_hit_counter = 0;
+
+/**
+ *  Watchpoint hit limit, defines how often a watchpoint should trigger
+ */
+unsigned char watchpoint_hit_limit = 20;
+
+/**
+ *  Watchpoint handler function
+ */
+void __attribute__((optimize("O0")))
+handle_data_abort_exception(struct trace *trace)
+{
+    fix_sp_lr(trace);
+
+    // TODO
+    // Currently I do not know how to find out, which watchpoint was triggered, so here I always handle watchpoint 0
+    watchpoint_hit |= DBGWP0;
+
+    // Disable the watchpoint so that the instruction that triggered the watchpoint can be executed without triggering the watchpoint again.
+    dbg_disable_watchpoint(0);
+    dbg_disable_watchpoint(1);
+    dbg_disable_watchpoint(2);
+    dbg_disable_watchpoint(3);
+
+    printf("   WP hit pc=%08x\n", trace->pc);
+
+    // Set breakpoint 3 to reset the watchpoint after executing the instruction that triggered the watchpoint.
+    dbg_set_breakpoint_for_addr_mismatch(3, trace->PC);
+}
+
+/**
+ *  Breakpoint handler function
+ */
 void __attribute__((optimize("O0")))
 handle_pref_abort_exception(struct trace *trace)
 {
@@ -123,7 +169,7 @@ handle_pref_abort_exception(struct trace *trace)
                     // we disable the breakpoint
                     //dbg_disable_breakpoint(0);
 
-                    // we set the bit in the breakpoint_hit variable to 0
+                    // we unset the bit in the breakpoint_hit variable for breakpoint 0
                     breakpoint_hit &= ~DBGBP0;
 
                     // we disable single-stepping for this breakpoint
@@ -138,8 +184,26 @@ handle_pref_abort_exception(struct trace *trace)
                 // we reset the breakpoint counter back to zero
                 breakpoint_cnt0 = 0;
 
-                // we set the bit in the breakpoint_hit variable to 0
+                // we unset the bit in the breakpoint_hit variable for breakpoint 0
                 breakpoint_hit &= ~DBGBP0;
+            }
+        }
+    }
+
+    // check whether breakpoint 3 is enabled
+    if (dbg_is_breakpoint_enabled(3)) {
+        // Used to reset watchpoint
+        if (watchpoint_hit & DBGWP0) {
+            dbg_disable_breakpoint(3);
+
+            // we unset the bit in the watchpoint_hit variable for watchpoint 0
+            watchpoint_hit &= ~DBGWP0;
+
+            // reenable watchpoint 0 only if the hit counter is below our limit
+            if (++watchpoint_hit_counter < watchpoint_hit_limit) {
+                dbg_enable_watchpoint(0);
+            } else {
+                printf("WP0 not reset (%d)\n", watchpoint_hit_counter);
             }
         }
     }
@@ -158,4 +222,8 @@ set_debug_registers(void)
     
     // Programm Breakpoint to match the instruction we want to hit
     dbg_set_breakpoint_for_addr_match(0, 0x126f0); // trigger on printf
+
+    // Program watchpoint to match the address we want to monitor
+    //dbg_set_watchpoint_for_addr_match(0, 0x1D3A59); // trigger on "TCAM: %d used: %d exceed:%d" string
+    dbg_set_watchpoint_for_addr_match(0, 0x1FC2A4); // trigger on "%s: Broadcom SDPCMD CDC driver" string
 }

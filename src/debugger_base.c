@@ -136,6 +136,25 @@ tr_reset_hook(void)
         );
 }
 
+/**
+ *  Exception handler that is triggered by watchpoint or illegal address access 
+ */
+__attribute__((at(0x180FAA, "", CHIP_VER_BCM4339, FW_VER_6_37_32_RC23_34_43_r639704)))
+__attribute__((naked)) void
+tr_data_abort_hook(void)
+{
+    asm(
+        "sub lr, lr, #8\n"                                  // we directly subtract 4 from the link register (original code overwrites the stack pointer first)
+        "srsdb sp!, #0x17\n"                                // stores return state (LR and SPSR) to the stack of the abort mode (0x17) (original codes switches to system mode (0x1F))
+        "push {r0}\n"
+        "push {lr}\n"                                       // here we do not get the expected link register from the system mode, but the link register from the abort mode
+        "sub sp, sp, #24\n"
+        "push {r0-r7}\n"
+        "eor r0, r0, r0\n"
+        "add r0, r0, #4\n"
+        "b handle_exceptions\n"
+        );
+}
 
 /**
  *  Exception handler that is triggered by breakpoint 
@@ -163,6 +182,8 @@ choose_exception_handler(void)
     asm(
             "cmp r0, #3\n"
             "beq label_pref_abort\n"
+            "cmp r0, #4\n"
+            "beq label_data_abort\n"
         "label_continue_exception:\n"
             "cmp r0, #6\n"                                  // check if fast interrupt
             "bne label_other_exception\n"                   // if interrupt was not a fast interrupt
@@ -179,6 +200,13 @@ choose_exception_handler(void)
             "push {lr}\n"
             "pop {lr}\n"
             "b handle_pref_abort_exception\n"
+        "label_data_abort:\n"
+            "mrc p15, 0, r0, c5, c0, 0\n"                   // read DFSR
+            "and r0, r0, #0x1F\n"                           // select FS bits from DFSR
+            "cmp r0, #2\n"                                  // compare FS to "debug event"
+            "bne label_continue_exception\n"                // if data abort not caused by a "debug event", go to regular exception handler
+            "mov r0, sp\n"
+            "b handle_data_abort_exception\n"
         );
 }
 
